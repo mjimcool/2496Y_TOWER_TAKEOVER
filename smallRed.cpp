@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <cmath>
+#include <iostream>
 #include "vex.h"
 
 //#region config_globals
@@ -49,14 +50,13 @@ void pre_auton() {
     f_chassis.i_bound = 100;
 
     f_chassis.slewRate = 150;
-    lift.pidInit(28, 0.5, 0, 8000);
-    angle.pidInit(5, 0, 0, 1000);
-    o_claw.pidInit(600, 80, 0, 50);
 }
 
 void autonomous() {
     liftPIDEnable = true;
     smallRed();
+
+    //testAuton();
 }
 
 #include "teleop.h"
