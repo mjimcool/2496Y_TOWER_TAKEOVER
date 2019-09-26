@@ -1,3 +1,6 @@
+#ifndef PIDCONTROL_H
+#define PIDCONTROL_H
+
 class PidControl{
     public:
     float currentPosition = 0;
@@ -95,3 +98,5 @@ PidControl lift(28, 0.5, 0, 8000);
 PidControl f_chassis(0, 0, 0, 0);//later initialized in drive()/pivot() functions
 PidControl angle(5, 0, 0, 1000);
 PidControl o_claw(600, 80, 0, 50);
+
+#endif
