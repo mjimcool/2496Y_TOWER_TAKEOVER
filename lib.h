@@ -1,6 +1,8 @@
 #ifndef LIB_H
 #define LIB_H
 
+#include "pidcontrol.h"
+
 //variables for axis output
 int  axis2             = 0;
 int  axis3             = 0;
@@ -12,18 +14,35 @@ bool btnShift          = false;
 
 //variable to store lift position
 int  liftPos           = 0;
+int  towerPos          = 0;
+bool usingPos          = false;
+bool usingPos_t        = false;
 
 //button states used for rising-edge trigger
 bool stateL1           = false;
 bool stateL2           = false;
 bool stateR1           = false;
+bool stateB            = false;
 
 //claw state
 bool clawCloseState    = false;
+bool clawCloseState_last = false;
+bool clawOverride      = false;
+bool clawOverride2     = false;
 
 //pid toggle state
 bool chassisPIDEnable  = false;
 bool liftPIDEnable     = false;
+bool clawPIDEnable     = false;
+bool turnPIDEnable     = false;
+bool slewOverrideEnable = false;
+
+bool requestAddStack   = false;
+bool reqReleaseStack   = false;
+
+int clawOffset = 0;
+
+int lift_last_target   = 0;
 
 //definitions of the enums used to increase code readability
 namespace turn_direction{
@@ -36,36 +55,19 @@ enum class eBlocking{
     BLOCKING,
     NONBLOCKING
 };
-bool chassisPIDEnable = false;
+
 //turning constants
-const float kLE        = 1;
-const float kRE        = 1;
+const float kLE        = 2.61;
 
 //encoder values from odometry wheels
-int odoLeft            = 0;
-int odoRight           = 0;
+float odoLeft            = 0;
+float odoRight           = 0;
 
-const int liftValues[] = {600, 800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400};
+const int liftValues[] = {980, 1340, 1530, 1780, 1990, 2270, 2490, 2830};
+const int towerValues[] = {980, 1930, 2270, 2890};
 
-float sgn(float input){
-  if(input>1){
-    return 1;
-  }
-  else if(input<1){
-    return -1;
-  }
-  else{
-    return 0;
-  }
-}
-
-float fabs(float input){
-    if(input<0){
-        return -input;
-    }
-    else{
-        return input;
-    }
+template <typename T> int sgn(T val){
+    return (T(0) < val) - (val < T(0));
 }
 
 void tankControl()
@@ -82,73 +84,22 @@ void tankControl()
     BackRight.spin(vex::directionType::fwd, axis2, vex::voltageUnits::mV);
 }
 
-class PidControl{
-    public:
-    int   currentPosition = 0;
-    float error           = 0;
-    float integral        = 0;
-    float derivative      = 0;
-    float last_error      = 0;
-    
-    float kP              = 0;
-    float kI              = 0;
-    float kD              = 0;
-
-    float target          = 0;
-    int   max_mV          = 12000;
-
-    int   output          = 0;
-
-    void pidInit(float p, float i, float d){
-        kP = p;
-        kI = i;
-        kD = d;
-    }
-
-    void moveTo(){
-        error = target - currentPosition;
-        if(fabs(error) < 50){
-            if(fabs(integral) < 4000)
-                integral += error;
-            else{
-                integral = sgn(integral)*4000;
-            }   
-        }
-        derivative = error - last_error;
-        last_error = currentPosition;
-
-        output = kP*error + kI*integral + kD*derivative;
-
-        output = fabs(output) > max_mV ? sgn(output)*max_mV : output;
-
+void thread_odoTracking(){
+    while(true){
+        odoLeft = 0.975*leftEncoder.value();
+        odoRight = rightEncoder.value();
         sleepMs(10);
     }
-
-    void reset_variables(){
-        currentPosition = 0;
-        error           = 0;
-        integral        = 0;
-        derivative      = 0;
-        last_error      = 0;
-        target          = 0;
-    }
-};
-PidControl lift;
-PidControl leftChassis;
-PidControl rightChassis;
-
-void odoTracking(){
-    odoLeft = leftEncoder.rotation(vex::rotationUnits::deg);
-    odoRight = rightEncoder.rotation(vex::rotationUnits::deg);
-    sleepMs(10);
 }
 
 void odoReset(){
     leftEncoder.resetRotation();
     rightEncoder.resetRotation();
+    odoLeft = 0;
+    odoRight = 0;
 }
 
-void liftPower(){
+void thread_liftPower(){
     while(true){
         if(liftPIDEnable){
             lift.currentPosition = liftPot.value(analogUnits::range12bit);
@@ -156,39 +107,80 @@ void liftPower(){
 
             LiftLeft.spin(vex::directionType::fwd, lift.output, vex::voltageUnits::mV);
             LiftRight.spin(vex::directionType::fwd, lift.output, vex::voltageUnits::mV);
-            sleepMs(10);
         }
+        sleepMs(10);
     }
 }
 
-void chassisPower(){
+void thread_chassisPower(){
     while(true){
         if(chassisPIDEnable){
-            leftChassis.currentPosition = odoLeft;
-            rightChassis.currentPosition = odoRight;
-            leftChassis.moveTo();
-            rightChassis.moveTo();
+            f_chassis.currentPosition = odoLeft;
+            angle.target = odoLeft;
+            angle.currentPosition = odoRight;
+            f_chassis.moveTo();
+            if(slewOverrideEnable){
+                f_chassis.slewOverride();
+            }
+            angle.moveTo();
 
-            FrontLeft.spin(vex::directionType::fwd, leftChassis.output, vex::voltageUnits::mV);
-            BackLeft.spin(vex::directionType::fwd, leftChassis.output, vex::voltageUnits::mV);
-            FrontRight.spin(vex::directionType::fwd, rightChassis.output, vex::voltageUnits::mV);
-            BackRight.spin(vex::directionType::fwd, rightChassis.output, vex::voltageUnits::mV);
-            sleepMs(10);
+            FrontLeft.spin(vex::directionType::fwd, f_chassis.output-angle.output, vex::voltageUnits::mV);
+            BackLeft.spin(vex::directionType::fwd, f_chassis.output-angle.output, vex::voltageUnits::mV);
+            FrontRight.spin(vex::directionType::fwd, f_chassis.output+angle.output, vex::voltageUnits::mV);
+            BackRight.spin(vex::directionType::fwd, f_chassis.output+angle.output, vex::voltageUnits::mV);
         }
+        else if(turnPIDEnable){
+            f_chassis.currentPosition = (odoLeft-odoRight)/2;//average the two
+            f_chassis.moveTo();
+            if(slewOverrideEnable){
+                f_chassis.slewOverride();
+            }
+
+            FrontLeft.spin(vex::directionType::fwd, f_chassis.output, vex::voltageUnits::mV);
+            BackLeft.spin(vex::directionType::fwd, f_chassis.output, vex::voltageUnits::mV);
+            FrontRight.spin(vex::directionType::rev, f_chassis.output, vex::voltageUnits::mV);
+            BackRight.spin(vex::directionType::rev, f_chassis.output, vex::voltageUnits::mV);
+        }
+        sleepMs(10);
     }
 }
 
-void debugStream(){
+//experimental claw torque PID
+void thread_clawPower(){
+    while(true){
+        if(clawPIDEnable)
+        {
+            if(Claw.rotation(vex::rotationUnits::deg) < -260+clawOffset){
+                 clawCloseState = false;
+            }
+
+            o_claw.currentPosition = Claw.torque(vex::torqueUnits::Nm);
+            o_claw.moveTo();
+
+            Claw.spin(vex::directionType::rev, 8000+o_claw.output, vex::voltageUnits::mV);
+        }
+        sleepMs(10);
+    }
+}
+
+
+void thread_debugStream(){
     while(true){
         Brain.Screen.clearScreen();
         Brain.Screen.setCursor(1,1);
-        Brain.Screen.print(lift.currentPosition);
-        Brain.Screen.newLine();
-        Brain.Screen.print(lift.target);
-        Brain.Screen.newLine();
-        Brain.Screen.print(lift.output);
 
-        sleepMs(200);
+        Brain.Screen.print(liftPot.value(analogUnits::range12bit));
+        Brain.Screen.newLine();
+        Brain.Screen.print(odoLeft);
+        Brain.Screen.newLine();
+        Brain.Screen.print(odoRight);
+        Brain.Screen.newLine();
+        Brain.Screen.print(f_chassis.output);
+        Brain.Screen.newLine();
+        con.Screen.print(f_chassis.error);
+        printf("OUTPUT: %.4f \n",(float)o_claw.output);
+
+        sleepMs(100);
         
     }
 }
